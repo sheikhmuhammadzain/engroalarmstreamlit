@@ -861,19 +861,8 @@ if uploaded_file is not None or use_example:
         with tab6:
             st.header("🧠 Engro Alarm Agent")
             st.caption("Ask a question. The agent will generate Python, run it on the filtered data, then provide a prescriptive summary.")
-
-            # API key input (optional, for runtime convenience)
-            with st.expander("API settings", expanded=False):
-                current_key = os.getenv("OPENAI_API_KEY") or st.session_state.get("OPENAI_API_KEY", "")
-                key_input = st.text_input("OpenAI API Key", value=current_key, type="password")
-                model = st.selectbox("Model", ["gpt-4o-mini", "gpt-4o", "gpt-3.5-turbo"], index=0)
-                if st.button("Save API key"):
-                    if key_input:
-                        os.environ["OPENAI_API_KEY"] = key_input
-                        st.session_state["OPENAI_API_KEY"] = key_input
-                        st.success("API key saved for this session.")
-                    else:
-                        st.warning("No key entered.")
+            # Model selection (API key must be set via environment; no UI for key input)
+            model = st.selectbox("Model", ["gpt-4o-mini", "gpt-4o", "gpt-3.5-turbo"], index=0)
 
             question = st.text_area("Your question about the filtered data", placeholder="e.g., Which sources are driving most alarms recently and what actions should be taken?")
             sample_rows = st.slider("Sample rows included in context", 3, 10, 5)

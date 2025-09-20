@@ -284,6 +284,67 @@ def run_user_code(code: str, df: pd.DataFrame):
         tb = traceback.format_exc(limit=2)
         return l, stdout_buf.getvalue(), tb
 
+# Build a compact context from code execution outputs for the prescriptive summary step
+def build_run_context(question: str, code: str, env: dict, stdout_text: str, err_text: str) -> str:
+    lines = []
+    lines.append("QUESTION")
+    lines.append(question)
+    lines.append("")
+    lines.append("CODE USED")
+    lines.append(code)
+    lines.append("")
+    if err_text:
+        lines.append("EXECUTION ERROR")
+        lines.append(err_text)
+        return "\n".join(lines)
+
+    # Summarize result
+    res = env.get('result', None)
+    fig_present = env.get('fig', None) is not None
+    lines.append("RESULT SUMMARY")
+    if res is None:
+        lines.append("No variable named 'result' was produced.")
+    elif isinstance(res, pd.DataFrame):
+        lines.append(f"DataFrame shape: {res.shape}")
+        cols = list(res.columns)
+        lines.append(f"Columns ({min(len(cols), 20)} shown): {cols[:20]}")
+        # Include a small sample to ground the LLM
+        sample_n = min(10, len(res))
+        try:
+            sample_csv = res.head(sample_n).to_csv(index=False)
+            lines.append("Sample rows (CSV):")
+            lines.append(sample_csv)
+        except Exception:
+            pass
+    elif isinstance(res, pd.Series):
+        lines.append(f"Series length: {len(res)}")
+        try:
+            lines.append("Head:")
+            lines.append(res.head(10).to_string())
+        except Exception:
+            pass
+    else:
+        # scalar or other types
+        try:
+            lines.append(f"Value: {str(res)}")
+        except Exception:
+            pass
+
+    # Stdout
+    if stdout_text:
+        lines.append("")
+        lines.append("CONSOLE OUTPUT")
+        # Truncate very long prints
+        if len(stdout_text) > 4000:
+            lines.append(stdout_text[:4000] + "\n...[truncated]...")
+        else:
+            lines.append(stdout_text)
+
+    # Figure presence
+    lines.append("")
+    lines.append(f"FIGURE PRESENT: {fig_present}")
+    return "\n".join(lines)
+
 # Main app logic
 if uploaded_file is not None or use_example:
     # Load data
@@ -347,7 +408,7 @@ if uploaded_file is not None or use_example:
             "📈 Process Variables",
             "📋 Data Table",
             "📑 Summary Report",
-            "🤖 Ask AI"
+            "🧠 Engro Alarm Agent"
         ])
         
         # Tab 1: Overview
@@ -798,8 +859,8 @@ if uploaded_file is not None or use_example:
 
         # Tab 6: Ask AI
         with tab6:
-            st.header("🤖 Ask AI about your filtered data")
-            st.caption("Only a compact summary (schema, small stats and a few sample rows) is sent to the AI.")
+            st.header("🧠 Engro Alarm Agent")
+            st.caption("Ask a question. The agent will generate Python, run it on the filtered data, then provide a prescriptive summary.")
 
             # API key input (optional, for runtime convenience)
             with st.expander("API settings", expanded=False):
@@ -814,62 +875,70 @@ if uploaded_file is not None or use_example:
                     else:
                         st.warning("No key entered.")
 
-            mode = st.radio("Response type", ["Text answer", "Python code + run"], horizontal=True)
-            question = st.text_area("Ask a question about the currently filtered data", placeholder="e.g., What are the top 3 sources by alarm count in this filtered range?")
+            question = st.text_area("Your question about the filtered data", placeholder="e.g., Which sources are driving most alarms recently and what actions should be taken?")
             sample_rows = st.slider("Sample rows included in context", 3, 10, 5)
-            col_run, col_show = st.columns([1,1])
-            with col_run:
-                run = st.button("Ask AI", type="primary")
-            with col_show:
-                show_ctx = st.checkbox("Show context sent to AI", value=False)
+            show_ctx = st.checkbox("Show context sent to AI", value=False)
+            show_code = st.checkbox("Show generated code", value=True)
+            run_agent = st.button("Run Engro Alarm Agent", type="primary")
 
-            if run and question:
-                with st.spinner("Preparing context and querying AI..."):
+            if run_agent and question:
+                # Phase 1: Build context and generate Python code
+                with st.spinner("Generating analysis code from your question..."):
                     context_text = build_ai_context(filtered_df, sample_rows=sample_rows)
-                    code_mode = (mode == "Python code + run")
-                    answer_text = ask_openai(question, context_text, model=model, code_mode=code_mode)
-
+                    code_resp = ask_openai(question, context_text, model=model, code_mode=True)
                 if show_ctx:
                     with st.expander("Context sent to AI"):
                         st.code(context_text)
 
-                if mode == "Text answer":
-                    st.markdown("### Answer")
-                    st.markdown(answer_text)
-                else:
+                code_block = extract_python_code(code_resp)
+                if not code_block:
+                    st.error("The agent did not produce runnable Python. Showing raw response below.")
+                    st.code(code_resp)
+                    st.stop()
+
+                if show_code:
                     st.markdown("### Generated code")
-                    code_block = extract_python_code(answer_text)
-                    if not code_block:
-                        st.error("The AI did not return a valid Python code block. Showing raw response below.")
-                        st.code(answer_text)
-                    else:
-                        st.code(code_block, language="python")
-                        with st.spinner("Executing code..."):
-                            env, stdout_text, err = run_user_code(code_block, filtered_df.copy())
-                        if err:
-                            st.error("Execution failed. See traceback:")
-                            st.code(err)
+                    st.code(code_block, language="python")
+
+                # Phase 2: Execute code
+                with st.spinner("Running code on filtered data..."):
+                    env, stdout_text, err = run_user_code(code_block, filtered_df.copy())
+
+                # Display execution outputs
+                if err:
+                    st.error("Execution failed. See traceback:")
+                    st.code(err)
+                else:
+                    if 'fig' in env and env['fig'] is not None:
+                        try:
+                            st.plotly_chart(env['fig'], width='stretch')
+                        except Exception:
+                            st.warning("'fig' was not a valid Plotly figure.")
+                    if 'result' in env:
+                        res = env['result']
+                        st.markdown("#### Result")
+                        if isinstance(res, pd.DataFrame):
+                            st.dataframe(res, width='stretch', height=500)
+                        elif isinstance(res, pd.Series):
+                            st.write(res)
                         else:
-                            # Show outputs
-                            if 'fig' in env and env['fig'] is not None:
-                                try:
-                                    st.plotly_chart(env['fig'], width='stretch')
-                                except Exception:
-                                    st.warning("'fig' was not a valid Plotly figure.")
-                            if 'result' in env:
-                                res = env['result']
-                                st.markdown("#### Result")
-                                if isinstance(res, pd.DataFrame):
-                                    st.dataframe(res, width='stretch', height=500)
-                                elif isinstance(res, pd.Series):
-                                    st.write(res)
-                                else:
-                                    st.write(res)
-                            if stdout_text:
-                                with st.expander("Console output"):
-                                    st.code(stdout_text)
-                            if ('result' not in env) and ('fig' not in env) and (not stdout_text):
-                                st.info("Code ran but did not produce 'result', 'fig' or prints.")
+                            st.write(res)
+                    if stdout_text:
+                        with st.expander("Console output"):
+                            st.code(stdout_text)
+                    if ('result' not in env) and ('fig' not in env) and (not stdout_text):
+                        st.info("Code ran but did not produce 'result', 'fig' or prints.")
+
+                # Phase 3: Prescriptive summary
+                with st.spinner("Generating prescriptive summary and recommendations..."):
+                    run_ctx = build_run_context(question, code_block, env, stdout_text, err)
+                    summary_question = (
+                        "Provide a concise, prescriptive analysis and recommendations based on the outputs above. "
+                        "Structure as: Findings, Recommendations, Potential next steps. If a figure is present, reference it."
+                    )
+                    summary_resp = ask_openai(summary_question, run_ctx, model=model, code_mode=False)
+                st.markdown("### Prescriptive summary")
+                st.markdown(summary_resp)
 
 else:
     # Welcome screen when no data is loaded

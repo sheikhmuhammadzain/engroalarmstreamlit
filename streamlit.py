@@ -12,6 +12,7 @@ import os
 import io
 import contextlib
 import traceback
+import matplotlib.pyplot as plt
 try:
     from openai import OpenAI
     _OPENAI_AVAILABLE = True
@@ -193,7 +194,7 @@ def build_ai_context(df: pd.DataFrame, max_numeric_cols: int = 6, max_cat_cols: 
     return "\n".join(lines)
 
 
-def ask_openai(question: str, context: str, model: str = "gpt-4o-mini", code_mode: bool = False) -> str:
+def ask_openai(question: str, context: str, model: str = "gpt-4o", code_mode: bool = False) -> str:
     """Ask OpenAI using a chat completion. Expects API key in env or session state.
     If code_mode is True, the assistant should return a single Python fenced code block
     that sets a variable named `result` (and optionally `fig` for Plotly).
@@ -214,8 +215,10 @@ def ask_openai(question: str, context: str, model: str = "gpt-4o-mini", code_mod
                 "Return a single fenced Python code block only (no prose), which: "
                 "1) computes the answer using the DataFrame df, "
                 "2) assigns the main output to a variable named result (DataFrame/Series/scalar), and "
-                "3) optionally assigns a Plotly figure to a variable named fig. "
-                "Do not import modules. Use provided pd/np/px if needed."
+                "3) optionally assigns a Plotly figure to a variable named fig OR a Matplotlib figure to a variable named mpl_fig. "
+                "Do not import modules. Use provided pd/np/px/plt if needed. "
+                "Do NOT call fig.show() or plt.show(); Streamlit will render the figure. "
+                "Use the variable name df exactly as provided. If using pyplot without explicit figure management, set mpl_fig = plt.gcf() at the end."
             )
             user_prompt = (
                 f"Context about df:\n\n{context}\n\n"
@@ -262,7 +265,8 @@ def extract_python_code(text: str) -> str:
 
 def run_user_code(code: str, df: pd.DataFrame):
     """Execute user-provided code in a restricted environment.
-    Exposes df, pd, np, px, go. Requires code to optionally set `result` and/or `fig`.
+    Exposes df, pd, np, px, go, plt. Requires code to optionally set `result` and/or
+    `fig` (Plotly) or `mpl_fig` (Matplotlib).
     Returns (env, stdout_text, error_text).
     """
     safe_builtins = {
@@ -272,7 +276,7 @@ def run_user_code(code: str, df: pd.DataFrame):
     }
     g = {
         '__builtins__': safe_builtins,
-        'pd': pd, 'np': np, 'px': px, 'go': go,
+        'pd': pd, 'np': np, 'px': px, 'go': go, 'plt': plt,
     }
     l = {'df': df}
     stdout_buf = io.StringIO()
@@ -300,7 +304,7 @@ def build_run_context(question: str, code: str, env: dict, stdout_text: str, err
 
     # Summarize result
     res = env.get('result', None)
-    fig_present = env.get('fig', None) is not None
+    fig_present = (env.get('fig', None) is not None) or (env.get('mpl_fig', None) is not None)
     lines.append("RESULT SUMMARY")
     if res is None:
         lines.append("No variable named 'result' was produced.")
@@ -861,8 +865,7 @@ if uploaded_file is not None or use_example:
         with tab6:
             st.header("🧠 Engro Alarm Agent")
             st.caption("Ask a question. The agent will generate Python, run it on the filtered data, then provide a prescriptive summary.")
-            # Model selection (API key must be set via environment; no UI for key input)
-            model = st.selectbox("Model", ["gpt-4o-mini", "gpt-4o", "gpt-3.5-turbo"], index=0)
+            # Uses default model configured in ask_openai (gpt-4o). API key must be set via environment.
 
             question = st.text_area("Your question about the filtered data", placeholder="e.g., Which sources are driving most alarms recently and what actions should be taken?")
             sample_rows = st.slider("Sample rows included in context", 3, 10, 5)
@@ -874,7 +877,7 @@ if uploaded_file is not None or use_example:
                 # Phase 1: Build context and generate Python code
                 with st.spinner("Generating analysis code from your question..."):
                     context_text = build_ai_context(filtered_df, sample_rows=sample_rows)
-                    code_resp = ask_openai(question, context_text, model=model, code_mode=True)
+                    code_resp = ask_openai(question, context_text, code_mode=True)
                 if show_ctx:
                     with st.expander("Context sent to AI"):
                         st.code(context_text)
@@ -903,6 +906,39 @@ if uploaded_file is not None or use_example:
                             st.plotly_chart(env['fig'], width='stretch')
                         except Exception:
                             st.warning("'fig' was not a valid Plotly figure.")
+                    if 'mpl_fig' in env and env['mpl_fig'] is not None:
+                        try:
+                            st.pyplot(env['mpl_fig'])
+                            try:
+                                plt.close(env['mpl_fig'])
+                            except Exception:
+                                pass
+                        except Exception:
+                            st.warning("'mpl_fig' was not a valid Matplotlib figure.")
+                    # Fallbacks: detect figures created with different variable names
+                    if (('fig' not in env) or (env.get('fig') is None)):
+                        try:
+                            # Find first Plotly figure among locals
+                            for _k, _v in env.items():
+                                if isinstance(_v, go.Figure):
+                                    st.plotly_chart(_v, width='stretch')
+                                    break
+                        except Exception:
+                            pass
+                    if (('mpl_fig' not in env) or (env.get('mpl_fig') is None)):
+                        try:
+                            # If code drew with plt without assigning, capture current/open figures
+                            fignums = plt.get_fignums()
+                            if fignums:
+                                last_num = fignums[-1]
+                                _fig = plt.figure(last_num)
+                                st.pyplot(_fig)
+                                try:
+                                    plt.close(_fig)
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
                     if 'result' in env:
                         res = env['result']
                         st.markdown("#### Result")
@@ -919,13 +955,77 @@ if uploaded_file is not None or use_example:
                         st.info("Code ran but did not produce 'result', 'fig' or prints.")
 
                 # Phase 3: Prescriptive summary
+                # If first attempt failed or produced no outputs, try one self-healing retry
+                retry_used = False
+                if err or ((env.get('fig') is None) and (env.get('mpl_fig') is None) and ('result' not in env)):
+                    retry_used = True
+                    st.info("The first attempt did not yield a usable chart/output. Retrying with an auto-correction...")
+                    correction_note = err or "No fig/mpl_fig/result produced."
+                    cols_list = list(filtered_df.columns)
+                    fix_instructions = (
+                        "Revise the previous code to succeed under these constraints: "
+                        "1) Use the DataFrame variable df. 2) Produce a Plotly figure as fig or a Matplotlib figure as mpl_fig. "
+                        "3) Set result if a tabular/stat value is meaningful. 4) Do NOT call fig.show() or plt.show(). "
+                        f"Use only these columns: {cols_list}"
+                    )
+                    fix_prompt = f"""
+Previous code:
+```python
+{code_block}
+```
+
+Issue:
+{correction_note}
+
+{fix_instructions}
+"""
+                    with st.spinner("Generating corrected code..."):
+                        code_resp2 = ask_openai(fix_prompt, context_text, code_mode=True)
+                    code_block2 = extract_python_code(code_resp2)
+                    if code_block2:
+                        if show_code:
+                            st.markdown("### Corrected code")
+                            st.code(code_block2, language="python")
+                        with st.spinner("Running corrected code..."):
+                            env2, stdout_text2, err2 = run_user_code(code_block2, filtered_df.copy())
+                        # Prefer second attempt if it improved
+                        if not err2 and (('result' in env2) or (env2.get('fig') is not None) or (env2.get('mpl_fig') is not None) or stdout_text2):
+                            code_block, env, stdout_text, err = code_block2, env2, stdout_text2, err2
+                            # Display outputs from corrected run
+                            if env.get('fig') is not None:
+                                try:
+                                    st.plotly_chart(env['fig'], width='stretch')
+                                except Exception:
+                                    st.warning("'fig' was not a valid Plotly figure.")
+                            if env.get('mpl_fig') is not None:
+                                try:
+                                    st.pyplot(env['mpl_fig'])
+                                    try:
+                                        plt.close(env['mpl_fig'])
+                                    except Exception:
+                                        pass
+                                except Exception:
+                                    st.warning("'mpl_fig' was not a valid Matplotlib figure.")
+                            if 'result' in env:
+                                res = env['result']
+                                st.markdown("#### Result (corrected)")
+                                if isinstance(res, pd.DataFrame):
+                                    st.dataframe(res, width='stretch', height=500)
+                                elif isinstance(res, pd.Series):
+                                    st.write(res)
+                                else:
+                                    st.write(res)
+                            if stdout_text:
+                                with st.expander("Console output (corrected)"):
+                                    st.code(stdout_text)
+
                 with st.spinner("Generating prescriptive summary and recommendations..."):
                     run_ctx = build_run_context(question, code_block, env, stdout_text, err)
                     summary_question = (
                         "Provide a concise, prescriptive analysis and recommendations based on the outputs above. "
                         "Structure as: Findings, Recommendations, Potential next steps. If a figure is present, reference it."
                     )
-                    summary_resp = ask_openai(summary_question, run_ctx, model=model, code_mode=False)
+                    summary_resp = ask_openai(summary_question, run_ctx, code_mode=False)
                 st.markdown("### Prescriptive summary")
                 st.markdown(summary_resp)
 

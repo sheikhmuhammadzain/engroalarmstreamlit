@@ -7,6 +7,7 @@ import numpy as np
 from datetime import datetime
 import warnings
 import plotly.io as pio
+import textwrap
 warnings.filterwarnings('ignore')
 
 # Global theming for Plotly: white background with green accents
@@ -226,7 +227,7 @@ if uploaded_file is not None or use_example:
                 fig_timeline = px.line(time_series, x='Event Time', y='count',
                                        title="Event Frequency (5-min intervals)")
                 fig_timeline.update_layout(height=300)
-                st.plotly_chart(fig_timeline, use_container_width=True)
+                st.plotly_chart(fig_timeline, width='stretch')
                 
                 # Top sources
                 st.subheader("🔝 Top Event Sources")
@@ -234,7 +235,7 @@ if uploaded_file is not None or use_example:
                 fig_sources = px.bar(x=top_sources.values, y=top_sources.index,
                                      orientation='h', title="Top 10 Sources")
                 fig_sources.update_layout(height=400, yaxis={'categoryorder':'total ascending'})
-                st.plotly_chart(fig_sources, use_container_width=True)
+                st.plotly_chart(fig_sources, width='stretch')
             
             with col2:
                 # Condition distribution
@@ -244,7 +245,7 @@ if uploaded_file is not None or use_example:
                                        names=condition_counts.index,
                                        title="Top 10 Conditions")
                 fig_conditions.update_layout(height=300)
-                st.plotly_chart(fig_conditions, use_container_width=True)
+                st.plotly_chart(fig_conditions, width='stretch')
                 
                 # Hourly distribution
                 st.subheader("⏰ Hourly Distribution")
@@ -252,7 +253,7 @@ if uploaded_file is not None or use_example:
                 fig_hourly = px.bar(x=hourly_dist.index, y=hourly_dist.values,
                                    title="Events by Hour of Day")
                 fig_hourly.update_layout(height=400, xaxis_title="Hour", yaxis_title="Count")
-                st.plotly_chart(fig_hourly, use_container_width=True)
+                st.plotly_chart(fig_hourly, width='stretch')
             
             # Location analysis
             st.subheader("📍 Location Analysis")
@@ -263,7 +264,7 @@ if uploaded_file is not None or use_example:
                 fig_locations = px.bar(x=top_locations.index, y=top_locations.values,
                                       title="Top 10 Locations")
                 fig_locations.update_layout(xaxis_tickangle=-45)
-                st.plotly_chart(fig_locations, use_container_width=True)
+                st.plotly_chart(fig_locations, width='stretch')
             
             with col2:
                 # Action types
@@ -271,7 +272,7 @@ if uploaded_file is not None or use_example:
                 fig_actions = px.pie(values=action_counts.values, 
                                     names=action_counts.index,
                                     title="Action Types Distribution")
-                st.plotly_chart(fig_actions, use_container_width=True)
+                st.plotly_chart(fig_actions, width='stretch')
         
         # Tab 2: Critical Events
         with tab2:
@@ -313,7 +314,7 @@ if uploaded_file is not None or use_example:
                                                  title="Alarm Frequency Over Time",
                                                  markers=True)
                     fig_alarm_timeline.update_traces(line_color='red')
-                    st.plotly_chart(fig_alarm_timeline, use_container_width=True)
+                    st.plotly_chart(fig_alarm_timeline, width='stretch')
                 
                 with col2:
                     st.subheader("🎯 Critical Sources")
@@ -325,7 +326,7 @@ if uploaded_file is not None or use_example:
                                          color=critical_sources_counts.values,
                                          color_continuous_scale='Reds')
                     fig_critical.update_layout(yaxis={'categoryorder':'total ascending'})
-                    st.plotly_chart(fig_critical, use_container_width=True)
+                    st.plotly_chart(fig_critical, width='stretch')
                 
                 # Alarm types and acknowledgment
                 col1, col2 = st.columns(2)
@@ -338,7 +339,7 @@ if uploaded_file is not None or use_example:
                                             color=alarm_types.values,
                                             color_continuous_scale='OrRd')
                     fig_alarm_types.update_layout(xaxis_tickangle=-45)
-                    st.plotly_chart(fig_alarm_types, use_container_width=True)
+                    st.plotly_chart(fig_alarm_types, width='stretch')
                 
                 with col2:
                     st.subheader("✅ Acknowledgment Status")
@@ -350,7 +351,7 @@ if uploaded_file is not None or use_example:
                                     title="Alarm Acknowledgment Status",
                                     color_discrete_map={'Acknowledged': '#16A34A', 
                                                        'Not Acknowledged': '#F59E0B'})
-                    st.plotly_chart(fig_ack, use_container_width=True)
+                    st.plotly_chart(fig_ack, width='stretch')
             else:
                 st.info("No alarms found in the selected data range")
         
@@ -387,7 +388,7 @@ if uploaded_file is not None or use_example:
                                        color='Source', hover_data=['Source', 'Condition', 'Units'],
                                        title="Process Values Timeline")
                 fig_values.update_layout(height=400)
-                st.plotly_chart(fig_values, use_container_width=True)
+                st.plotly_chart(fig_values, width='stretch')
                 
                 col1, col2 = st.columns(2)
                 
@@ -402,7 +403,7 @@ if uploaded_file is not None or use_example:
                     fig_hist.add_vline(x=value_df['Value'].median(), 
                                       line_dash="dash", line_color="#10B981",
                                       annotation_text="Median")
-                    st.plotly_chart(fig_hist, use_container_width=True)
+                    st.plotly_chart(fig_hist, width='stretch')
                 
                 with col2:
                     # Box plot by units
@@ -413,7 +414,7 @@ if uploaded_file is not None or use_example:
                     if len(value_df_units) > 0:
                         fig_box = px.box(value_df_units, x='Units', y='Value',
                                         title="Value Ranges by Unit Type")
-                        st.plotly_chart(fig_box, use_container_width=True)
+                        st.plotly_chart(fig_box, width='stretch')
                 
                 # Outlier detection
                 st.subheader("🔍 Outlier Detection")
@@ -470,7 +471,7 @@ if uploaded_file is not None or use_example:
                                           yaxis_title="Value",
                                           height=400)
                 
-                st.plotly_chart(fig_outliers, use_container_width=True)
+                st.plotly_chart(fig_outliers, width='stretch')
             else:
                 st.info("No process values found in the selected data")
         
@@ -515,7 +516,7 @@ if uploaded_file is not None or use_example:
             # Display dataframe
             st.dataframe(
                 display_df.iloc[start_idx:end_idx],
-                use_container_width=True,
+                width='stretch',
                 height=600
             )
             
@@ -532,43 +533,52 @@ if uploaded_file is not None or use_example:
         with tab5:
             st.header("📑 Summary Report")
             
-            # Generate report
-            report_text = f"""
+            # Generate report (Markdown)
+            start_time = filtered_df['Event Time'].min()
+            end_time = filtered_df['Event Time'].max()
+            duration_hours = (end_time - start_time).total_seconds() / 3600 if end_time and start_time else 0
+            avg_per_hour = (len(filtered_df) / duration_hours) if duration_hours > 0 else 0
+            alarm_total = filtered_df['Is_Alarm'].sum()
+            normal_total = len(filtered_df) - alarm_total
+            ack_total = filtered_df['Action'].str.contains('ACK', na=False).sum()
+            unack_total = len(filtered_df) - ack_total
+
+            report_text = textwrap.dedent(f"""
             # ALARM DATA ANALYSIS REPORT
             Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-            
+
             ## BASIC STATISTICS
             - Total Events: {len(filtered_df):,}
-            - Time Period: {filtered_df['Event Time'].min()} to {filtered_df['Event Time'].max()}
-            - Duration: {(filtered_df['Event Time'].max() - filtered_df['Event Time'].min()).total_seconds()/3600:.2f} hours
-            - Average Events/Hour: {len(filtered_df)/((filtered_df['Event Time'].max() - filtered_df['Event Time'].min()).total_seconds()/3600):.2f}
-            
+            - Time Period: {start_time.strftime('%Y-%m-%d %H:%M:%S')} to {end_time.strftime('%Y-%m-%d %H:%M:%S')}
+            - Duration: {duration_hours:.2f} hours
+            - Average Events/Hour: {avg_per_hour:.2f}
+
             ## ALARM STATISTICS
-            - Total Alarms: {filtered_df['Is_Alarm'].sum():,} ({filtered_df['Is_Alarm'].sum()/len(filtered_df)*100:.1f}%)
-            - Normal Events: {len(filtered_df) - filtered_df['Is_Alarm'].sum():,} ({(len(filtered_df) - filtered_df['Is_Alarm'].sum())/len(filtered_df)*100:.1f}%)
-            
+            - Total Alarms: {alarm_total:,} ({(alarm_total/len(filtered_df))*100:.1f}%)
+            - Normal Events: {normal_total:,} ({(normal_total/len(filtered_df))*100:.1f}%)
+
             ## ACKNOWLEDGMENT
-            - Acknowledged Events: {filtered_df['Action'].str.contains('ACK', na=False).sum():,}
-            - Unacknowledged: {len(filtered_df) - filtered_df['Action'].str.contains('ACK', na=False).sum():,}
-            
+            - Acknowledged Events: {ack_total:,}
+            - Unacknowledged: {unack_total:,}
+
             ## TOP 5 EVENT SOURCES
-            """
-            
+            """)
+
             for i, (source, count) in enumerate(filtered_df['Source'].value_counts().head(5).items(), 1):
                 report_text += f"\n{i}. {source}: {count:,} events ({count/len(filtered_df)*100:.1f}%)"
-            
+
             report_text += "\n\n## TOP 5 CONDITIONS"
             for i, (condition, count) in enumerate(filtered_df['Condition'].value_counts().head(5).items(), 1):
                 report_text += f"\n{i}. {condition}: {count:,} events ({count/len(filtered_df)*100:.1f}%)"
-            
+
             report_text += "\n\n## TOP 5 LOCATIONS"
             for i, (location, count) in enumerate(filtered_df['Location Tag'].value_counts().head(5).items(), 1):
                 report_text += f"\n{i}. {location}: {count:,} events ({count/len(filtered_df)*100:.1f}%)"
-            
+
             # Value statistics
             value_data = filtered_df['Value'].dropna()
             if len(value_data) > 0:
-                report_text += f"""
+                report_text += textwrap.dedent(f"""
                 
                 ## VALUE STATISTICS
                 - Events with Values: {len(value_data):,} ({len(value_data)/len(filtered_df)*100:.1f}%)
@@ -577,17 +587,18 @@ if uploaded_file is not None or use_example:
                 - Std Deviation: {value_data.std():.2f}
                 - Min Value: {value_data.min():.2f}
                 - Max Value: {value_data.max():.2f}
-                """
-            
-            # Display report
-            st.text(report_text)
+                """)
+
+            # Display report as Markdown
+            st.markdown(report_text)
             
             # Download report button
             st.download_button(
-                label="📥 Download Report as Text",
+                label="📥 Download Report as Markdown",
                 data=report_text,
-                file_name=f"alarm_analysis_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
-                mime="text/plain"
+                file_name=f"alarm_analysis_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md",
+                mime="text/markdown"
+
             )
             
             # Additional insights

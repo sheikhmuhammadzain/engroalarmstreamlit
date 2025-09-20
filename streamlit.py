@@ -8,6 +8,15 @@ from datetime import datetime
 import warnings
 import plotly.io as pio
 import textwrap
+import os
+import io
+import contextlib
+import traceback
+try:
+    from openai import OpenAI
+    _OPENAI_AVAILABLE = True
+except Exception:
+    _OPENAI_AVAILABLE = False
 warnings.filterwarnings('ignore')
 
 # Global theming for Plotly: white background with green accents
@@ -121,6 +130,160 @@ def load_data(file):
     
     return df
 
+# ---------- AI helpers ----------
+def build_ai_context(df: pd.DataFrame, max_numeric_cols: int = 6, max_cat_cols: int = 6, sample_rows: int = 5) -> str:
+    """Build a concise text context describing the filtered dataframe.
+    Limits numeric/categorical summaries and includes a few sample rows to keep token usage low.
+    """
+    if df is None or len(df) == 0:
+        return "No data available."
+
+    lines = []
+    lines.append("DATAFRAME OVERVIEW")
+    lines.append(f"Rows: {len(df):,}")
+    lines.append(f"Columns: {len(df.columns):,}")
+    lines.append("")
+    lines.append("COLUMNS (name: dtype, non-null count):")
+    for col in list(df.columns)[:50]:
+        dtype = str(df[col].dtype)
+        nonnull = int(df[col].notna().sum())
+        lines.append(f"- {col}: {dtype}, non-null={nonnull:,}")
+
+    # Numeric summaries
+    num_cols = df.select_dtypes(include=np.number).columns.tolist()
+    if num_cols:
+        lines.append("")
+        lines.append("NUMERIC SUMMARIES (mean, std, min, max):")
+        for col in num_cols[:max_numeric_cols]:
+            desc = df[col].describe()
+            try:
+                mean = float(desc.get('mean', 0))
+                std = float(desc.get('std', 0))
+                min_v = float(desc.get('min', 0))
+                max_v = float(desc.get('max', 0))
+                lines.append(f"- {col}: mean={mean:.2f}, std={std:.2f}, min={min_v:.2f}, max={max_v:.2f}")
+            except Exception:
+                pass
+
+    # Categorical top values
+    cat_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
+    if cat_cols:
+        lines.append("")
+        lines.append("CATEGORICAL TOP VALUES (top 5):")
+        for col in cat_cols[:max_cat_cols]:
+            vc = df[col].value_counts(dropna=True).head(5)
+            compact = ", ".join([f"{idx} ({cnt})" for idx, cnt in vc.items()])
+            lines.append(f"- {col}: {compact}")
+
+    # Sample rows
+    try:
+        n = min(sample_rows, len(df))
+        sample = df.head(n)
+        lines.append("")
+        lines.append(f"SAMPLE ROWS (first {n}):")
+        # Keep sample compact by converting datetimes to string
+        sample_cp = sample.copy()
+        for c in sample_cp.columns:
+            if np.issubdtype(sample_cp[c].dtype, np.datetime64):
+                sample_cp[c] = sample_cp[c].dt.strftime('%Y-%m-%d %H:%M:%S')
+        lines.append(sample_cp.to_csv(index=False))
+    except Exception:
+        pass
+
+    return "\n".join(lines)
+
+
+def ask_openai(question: str, context: str, model: str = "gpt-4o-mini", code_mode: bool = False) -> str:
+    """Ask OpenAI using a chat completion. Expects API key in env or session state.
+    If code_mode is True, the assistant should return a single Python fenced code block
+    that sets a variable named `result` (and optionally `fig` for Plotly).
+    """
+    if not _OPENAI_AVAILABLE:
+        return "OpenAI Python package is not installed. Please run: pip install openai"
+
+    api_key = os.getenv("OPENAI_API_KEY") or st.session_state.get("OPENAI_API_KEY")
+    if not api_key:
+        return "Missing OPENAI_API_KEY. Add it to environment or enter it in the field above."
+
+    try:
+        client = OpenAI(api_key=api_key)
+        if code_mode:
+            system_prompt = (
+                "You are a helpful data analyst writing Python to analyze a pandas DataFrame named df. "
+                "Use ONLY the provided context to infer column names/types and avoid external I/O or network access. "
+                "Return a single fenced Python code block only (no prose), which: "
+                "1) computes the answer using the DataFrame df, "
+                "2) assigns the main output to a variable named result (DataFrame/Series/scalar), and "
+                "3) optionally assigns a Plotly figure to a variable named fig. "
+                "Do not import modules. Use provided pd/np/px if needed."
+            )
+            user_prompt = (
+                f"Context about df:\n\n{context}\n\n"
+                f"Task: Write Python code to answer the user's question on df. Question: {question}"
+            )
+        else:
+            system_prompt = (
+                "You are a helpful data analyst. Use ONLY the provided context to answer the user's question. "
+                "If the answer is not derivable from the context, say 'I cannot determine from the provided data.' "
+                "When relevant, include concise reasoning and, if helpful, short pandas code snippets to reproduce the answer."
+            )
+            user_prompt = f"Context:\n\n{context}\n\nQuestion: {question}"
+        resp = client.chat.completions.create(
+            model=model,
+            temperature=0.2,
+            max_tokens=700,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        )
+        return resp.choices[0].message.content
+    except Exception as e:
+        return f"OpenAI request failed: {e}"
+
+
+def extract_python_code(text: str) -> str:
+    """Extract the first Python fenced code block from the LLM text."""
+    if not text:
+        return ""
+    fences = [
+        ("```python", "```"),
+        ("```py", "```"),
+        ("```", "```"),
+    ]
+    for start, end in fences:
+        if start in text:
+            start_idx = text.find(start) + len(start)
+            end_idx = text.find(end, start_idx)
+            if end_idx != -1:
+                return text[start_idx:end_idx].strip()
+    return ""
+
+
+def run_user_code(code: str, df: pd.DataFrame):
+    """Execute user-provided code in a restricted environment.
+    Exposes df, pd, np, px, go. Requires code to optionally set `result` and/or `fig`.
+    Returns (env, stdout_text, error_text).
+    """
+    safe_builtins = {
+        'len': len, 'range': range, 'min': min, 'max': max, 'sum': sum,
+        'sorted': sorted, 'enumerate': enumerate, 'zip': zip, 'abs': abs, 'round': round,
+        'print': print, 'any': any, 'all': all, 'map': map, 'filter': filter
+    }
+    g = {
+        '__builtins__': safe_builtins,
+        'pd': pd, 'np': np, 'px': px, 'go': go,
+    }
+    l = {'df': df}
+    stdout_buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(stdout_buf):
+            exec(code, g, l)
+        return l, stdout_buf.getvalue(), None
+    except Exception:
+        tb = traceback.format_exc(limit=2)
+        return l, stdout_buf.getvalue(), tb
+
 # Main app logic
 if uploaded_file is not None or use_example:
     # Load data
@@ -178,12 +341,13 @@ if uploaded_file is not None or use_example:
             filtered_df = filtered_df[filtered_df['Is_Alarm'] == True]
         
         # Main dashboard
-        tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
             "📊 Overview", 
             "🚨 Critical Events", 
             "📈 Process Variables",
             "📋 Data Table",
-            "📑 Summary Report"
+            "📑 Summary Report",
+            "🤖 Ask AI"
         ])
         
         # Tab 1: Overview
@@ -631,6 +795,81 @@ if uploaded_file is not None or use_example:
                     st.warning(f"**Low Acknowledgment Rate:** Only {ack_rate:.1f}% of events acknowledged")
                 else:
                     st.success(f"**Good Acknowledgment Rate:** {ack_rate:.1f}% of events acknowledged")
+
+        # Tab 6: Ask AI
+        with tab6:
+            st.header("🤖 Ask AI about your filtered data")
+            st.caption("Only a compact summary (schema, small stats and a few sample rows) is sent to the AI.")
+
+            # API key input (optional, for runtime convenience)
+            with st.expander("API settings", expanded=False):
+                current_key = os.getenv("OPENAI_API_KEY") or st.session_state.get("OPENAI_API_KEY", "")
+                key_input = st.text_input("OpenAI API Key", value=current_key, type="password")
+                model = st.selectbox("Model", ["gpt-4o-mini", "gpt-4o", "gpt-3.5-turbo"], index=0)
+                if st.button("Save API key"):
+                    if key_input:
+                        os.environ["OPENAI_API_KEY"] = key_input
+                        st.session_state["OPENAI_API_KEY"] = key_input
+                        st.success("API key saved for this session.")
+                    else:
+                        st.warning("No key entered.")
+
+            mode = st.radio("Response type", ["Text answer", "Python code + run"], horizontal=True)
+            question = st.text_area("Ask a question about the currently filtered data", placeholder="e.g., What are the top 3 sources by alarm count in this filtered range?")
+            sample_rows = st.slider("Sample rows included in context", 3, 10, 5)
+            col_run, col_show = st.columns([1,1])
+            with col_run:
+                run = st.button("Ask AI", type="primary")
+            with col_show:
+                show_ctx = st.checkbox("Show context sent to AI", value=False)
+
+            if run and question:
+                with st.spinner("Preparing context and querying AI..."):
+                    context_text = build_ai_context(filtered_df, sample_rows=sample_rows)
+                    code_mode = (mode == "Python code + run")
+                    answer_text = ask_openai(question, context_text, model=model, code_mode=code_mode)
+
+                if show_ctx:
+                    with st.expander("Context sent to AI"):
+                        st.code(context_text)
+
+                if mode == "Text answer":
+                    st.markdown("### Answer")
+                    st.markdown(answer_text)
+                else:
+                    st.markdown("### Generated code")
+                    code_block = extract_python_code(answer_text)
+                    if not code_block:
+                        st.error("The AI did not return a valid Python code block. Showing raw response below.")
+                        st.code(answer_text)
+                    else:
+                        st.code(code_block, language="python")
+                        with st.spinner("Executing code..."):
+                            env, stdout_text, err = run_user_code(code_block, filtered_df.copy())
+                        if err:
+                            st.error("Execution failed. See traceback:")
+                            st.code(err)
+                        else:
+                            # Show outputs
+                            if 'fig' in env and env['fig'] is not None:
+                                try:
+                                    st.plotly_chart(env['fig'], width='stretch')
+                                except Exception:
+                                    st.warning("'fig' was not a valid Plotly figure.")
+                            if 'result' in env:
+                                res = env['result']
+                                st.markdown("#### Result")
+                                if isinstance(res, pd.DataFrame):
+                                    st.dataframe(res, width='stretch', height=500)
+                                elif isinstance(res, pd.Series):
+                                    st.write(res)
+                                else:
+                                    st.write(res)
+                            if stdout_text:
+                                with st.expander("Console output"):
+                                    st.code(stdout_text)
+                            if ('result' not in env) and ('fig' not in env) and (not stdout_text):
+                                st.info("Code ran but did not produce 'result', 'fig' or prints.")
 
 else:
     # Welcome screen when no data is loaded
